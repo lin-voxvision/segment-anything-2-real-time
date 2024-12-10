@@ -22,13 +22,29 @@ sam2_checkpoint = "../checkpoints/sam2_hiera_small.pt"
 model_cfg = "sam2_hiera_s.yaml"
 
 predictor = build_sam2_camera_predictor(model_cfg, sam2_checkpoint)
+print(predictor)
+
+cap = cv2.VideoCapture("rtsp://admin:admin@127.0.0.1:8554/cam/realmonitor?channel=1&subtype=0&unicast=true")
 
 
-cap = cv2.VideoCapture("../notebooks/videos/aquarium/aquarium.mp4")
+width = 1920
+height = 1080
+
+
+# 设置输出视频参数
+output_path = "output.mp4"
+fps = cap.get(cv2.CAP_PROP_FPS)
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
 
 if_init = False
 
+ptx = 960
+pty = 540
 
+
+i = 0
 while True:
     ret, frame = cap.read()
     if not ret:
@@ -36,7 +52,6 @@ while True:
 
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    width, height = frame.shape[:2][::-1]
     if not if_init:
 
         predictor.load_first_frame(frame)
@@ -48,18 +63,19 @@ while True:
 
 
         ##! add points, `1` means positive click and `0` means negative click
-        # points = np.array([[660, 267]], dtype=np.float32)
-        # labels = np.array([1], dtype=np.int32)
+        points = np.array([[ptx, pty]], dtype=np.float32)
+        labels = np.array([1], dtype=np.int32)
+        print("points, labels", points, labels)
 
-        # _, out_obj_ids, out_mask_logits = predictor.add_new_prompt(
-        #     frame_idx=ann_frame_idx, obj_id=ann_obj_id, points=points, labels=labels
-        # )
-
-        ## ! add bbox
-        bbox = np.array([[600, 214], [765, 286]], dtype=np.float32)
         _, out_obj_ids, out_mask_logits = predictor.add_new_prompt(
-            frame_idx=ann_frame_idx, obj_id=ann_obj_id, bbox=bbox
+            frame_idx=ann_frame_idx, obj_id=ann_obj_id, points=points, labels=labels
         )
+
+        # ## ! add bbox
+        # bbox = np.array([[600, 214], [765, 286]], dtype=np.float32)
+        # _, out_obj_ids, out_mask_logits = predictor.add_new_prompt(
+        #     frame_idx=ann_frame_idx, obj_id=ann_obj_id, bbox=bbox
+        # )
 
         ##! add mask
         # mask_img_path="../notebooks/masks/aquarium/aquarium_mask.png"
@@ -76,19 +92,18 @@ while True:
         all_mask = np.zeros((height, width, 1), dtype=np.uint8)
         # print(all_mask.shape)
         for i in range(0, len(out_obj_ids)):
-            out_mask = (out_mask_logits[i] > 0.0).permute(1, 2, 0).cpu().numpy().astype(
-                np.uint8
-            ) * 255
+            out_mask = (out_mask_logits[i] > 0.0).permute(1, 2, 0).cpu().numpy().astype(np.uint8) * 255
 
             all_mask = cv2.bitwise_or(all_mask, out_mask)
 
         all_mask = cv2.cvtColor(all_mask, cv2.COLOR_GRAY2RGB)
         frame = cv2.addWeighted(frame, 1, all_mask, 0.5, 0)
+        cv2.rectangle(frame, (ptx - 10, pty - 10), (ptx + 10, pty + 10), (0, 0, 255), 2)
     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    cv2.imshow("frame", frame)
-
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
+    out.write(frame)
+    # cv2.imshow("frame", frame)
+    # if cv2.waitKey(1) & 0xFF == ord("q"):
+        # break
 
 cap.release()
 # gif = imageio.mimsave("./result.gif", frame_list, "GIF", duration=0.00085)
