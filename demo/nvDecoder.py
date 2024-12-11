@@ -24,6 +24,7 @@
 import sys
 import argparse
 import numpy as np
+import cv2
 
 sys.path.append('../')
 from pathlib import Path
@@ -32,78 +33,96 @@ import PyNvVideoCodec as nvc
 from Utils import cast_address_to_1d_bytearray
 
 
-def decode(gpu_id, enc_file_path, dec_file_path, use_device_memory):
+def decode_rtsp(gpu_id, rtsp_url, dec_file_path, use_device_memory):
     """
-            Function to decode media file and write raw frames into an output file.
+            函数用于解码RTSP流并将帧转换为RGB格式后保存为jpg图像。
 
-            This function will read a media file and split it into chunks of data (packets).
-            A Packet contains elementary bitstream belonging to one frame and conforms to annex.b standard.
-            Packet is sent to decoder for parsing and hardware accelerated decoding. Decoder returns list of raw YUV
-            frames which can be iterated upon.
+            该函数将从RTSP流读取数据并将其分割成数据包(packets)。
+            每个数据包包含符合annex.b标准的一帧基本比特流。
+            数据包被发送到解码器进行解析和硬件加速解码。解码器返回可迭代的原始YUV帧列表。
 
-            Parameters: - gpu_id (int): Ordinal of GPU to use [Parameter not in use] - enc_file_path (str): Path to
-            file to be decoded - enc_file_path (str): Path to output file into which raw frames are stored -
-            use_device_memory (int): if set to 1 output decoded frame is CUDeviceptr wrapped in CUDA Array Interface
-            else its Host memory Returns: - None.
+            参数:
+            - gpu_id (int): 要使用的GPU序号 [参数未使用]
+            - rtsp_url (str): RTSP流地址
+            - dec_file_path (str): 输出jpg图像的路径
+            - use_device_memory (int): 如果设为1,输出解码帧为包装在CUDA Array Interface中的CUDeviceptr,
+                                     否则为主机内存
 
-            Example:
-            >>> decode(0, "path/to/input/media/file","path/to/output/yuv", 1)
-            Function to decode media file and write raw frames into an output file.
+            返回值: None
+
+            示例:
+            >>> decode_rtsp(0, "rtsp://example.com/stream", "path/to/output.jpg", 1)
     """
-    nv_dmx = nvc.CreateDemuxer(filename=enc_file_path)
+    # 创建RTSP流的解复用器
+    nv_dmx = nvc.CreateDemuxer(filename=rtsp_url)
     nv_dec = nvc.CreateDecoder(gpuid=0,
-                               codec=nv_dmx.GetNvCodecId(),
-                               cudacontext=0,
-                               cudastream=0,
-                               usedevicememory=use_device_memory)
+                              codec=nv_dmx.GetNvCodecId(),
+                              cudacontext=0,
+                              cudastream=0,
+                              usedevicememory=use_device_memory)
 
     decoded_frame_size = 0
     raw_frame = None
-
+    width = nv_dmx.Width()
+    height = nv_dmx.Height()
 
     seq_triggered = False
-    # printing out FPS and pixel format of the stream for convenience
     print("FPS = ", nv_dmx.FrameRate())
-    # open the file to be decoded in write mode
-    with open(dec_file_path, "wb") as decFile:
-        # demuxer can be iterated, fetch the packet from demuxer
-        for packet in nv_dmx:
-            # Decode returns a list of packets, range of this list is from [0, size of (decode picture buffer)]
-            # size of (decode picture buffer) depends on GPU, fur Turing series its 8
-            for decoded_frame in nv_dec.Decode(packet):
-                # 'decoded_frame' contains list of views implementing cuda array interface
-                # for nv12, it would contain 2 views for each plane and two planes would be contiguous 
-                if not seq_triggered:
-                    decoded_frame_size = nv_dec.GetFrameSize()
-                    raw_frame = np.ndarray(shape=decoded_frame_size, dtype=np.uint8)
-                    seq_triggered = True
+    
+    try:
+        timeout = 0
+        while True:  # 持续读取RTSP流
+            for packet in nv_dmx:
+                if packet is None:
+                    timeout += 1
+                    if timeout > 100:  # 设置超时阈值
+                        print("无法获取RTSP流数据，请检查RTSP地址是否正确")
+                        return
+                    continue
+                    
+                for decoded_frame in nv_dec.Decode(packet):
+                    if not seq_triggered:
+                        decoded_frame_size = nv_dec.GetFrameSize()
+                        raw_frame = np.ndarray(shape=decoded_frame_size, dtype=np.uint8)
+                        seq_triggered = True
 
-
-                luma_base_addr = decoded_frame.GetPtrToPlane(0)
-                if use_device_memory:
-                    cuda.memcpy_dtoh(raw_frame, luma_base_addr)
-                    bits = bytearray(raw_frame)
-                    decFile.write(bits)
-                else:
-                    new_array = cast_address_to_1d_bytearray(base_address=luma_base_addr, size=decoded_frame.framesize())
-                    decFile.write(bytearray(new_array))
+                    luma_base_addr = decoded_frame.GetPtrToPlane(0)
+                    if use_device_memory:
+                        cuda.memcpy_dtoh(raw_frame, luma_base_addr)
+                        # 将NV12格式的帧重塑为正确的形状
+                        yuv = raw_frame.reshape((height * 3 // 2, width))
+                    else:
+                        new_array = cast_address_to_1d_bytearray(base_address=luma_base_addr, size=decoded_frame.framesize())
+                        yuv = np.frombuffer(new_array, dtype=np.uint8).reshape((height * 3 // 2, width))
+                    
+                    # 转换为BGR格式
+                    bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_NV12)
+                    # 保存为jpg图像
+                    cv2.imwrite(dec_file_path, bgr)
+                    
+                    print("成功解码一帧")
+                    return  # 如果只需要一帧就可以返回
+                    
+    except Exception as e:
+        print(f"解码过程出错: {str(e)}")
+    finally:
+        print("正在停止RTSP流解码...")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        "This sample application illustrates the demuxing and decoding of a media file."
+        "此示例程序演示了RTSP流的解复用和解码。"
     )
     parser.add_argument(
-        "-g", "--gpu_id", type=int, help="GPU id, check nvidia-smi, only for demo, do not use", )
+        "-g", "--gpu_id", type=int, help="GPU ID, 查看nvidia-smi, 仅用于演示", )
     parser.add_argument(
-        "-i", "--encoded_file_path", type=Path, required=True,
-        help="Encoded video file (read from)", )
+        "-i", "--rtsp_url", type=str, required=True,
+        help="RTSP流地址", )
     parser.add_argument(
-        "-o", "--raw_file_path", required=True, type=Path, help="Raw NV12 video file (write to)", )
+        "-o", "--raw_file_path", required=True, type=Path, help="输出jpg图像路径", )
     parser.add_argument(
-        "-d", "--use_device_memory", required=True, type=int, help="Decoder output surface is in device memory else in "
-                                                                   "host memory", )
+        "-d", "--use_device_memory", required=True, type=int, help="解码器输出表面在设备内存中,否则在主机内存中", )
     args = parser.parse_args()
-    decode(args.gpu_id, args.encoded_file_path.as_posix(),
-           args.raw_file_path.as_posix(),
-           args.use_device_memory)
+    decode_rtsp(args.gpu_id, args.rtsp_url,
+              args.raw_file_path.as_posix(),
+              args.use_device_memory)

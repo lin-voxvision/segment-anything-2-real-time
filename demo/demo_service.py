@@ -13,7 +13,7 @@ from fastapi import BackgroundTasks
 import socket
 import time
 
-
+import requests
 
 app = FastAPI()
 
@@ -45,15 +45,15 @@ if torch.cuda.get_device_properties(0).major >= 8:
 
 from sam2.build_sam import build_sam2_camera_predictor
 
-sam2_checkpoint = "../checkpoints/sam2_hiera_large.pt"
-model_cfg = "sam2_hiera_l.yaml"
+sam2_checkpoint = "../checkpoints/sam2_hiera_small.pt"
+model_cfg = "sam2_hiera_s.yaml"
 
 # 初始化两个predictor
 predictor1 = build_sam2_camera_predictor(model_cfg, sam2_checkpoint)
 predictor2 = build_sam2_camera_predictor(model_cfg, sam2_checkpoint)
 print("初始化完成两个predictor")
 
-cap = cv2.VideoCapture("rtsp://admin:admin@127.0.0.1:8554/cam/realmonitor?channel=1&subtype=0&unicast=true")
+cap = cv2.VideoCapture("rtsp://admin:admin@127.0.0.1:9554/cam/realmonitor?channel=1&subtype=0&unicast=true")
 width = 1920
 height = 1080
 
@@ -139,14 +139,29 @@ async def process_video():
                         out_mask = (out_mask_logits[i] > 0.0).permute(1, 2, 0).cpu().numpy().astype(np.uint8) * 255
                         all_mask = cv2.bitwise_or(all_mask, out_mask)
                         contours, _ = cv2.findContours(out_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                        for contour in contours:
-                            x, y, w, h = cv2.boundingRect(contour)
+                        # for contour in contours:
+                        #     x, y, w, h = cv2.boundingRect(contour)
+                        #     x_center = x + int(w / 2)
+                        #     y_center = y + int(h / 2)
+                        #     requests.get(f"http://192.168.0.7:18082/sam2/tracking/{x_center}/{y_center}")
+                        #     cv2.circle(frame, (x_center, y_center), 5, (0, 0, 255), -1)
+                        #     bbox_data.extend([x, y, w, h])
+                        if len(contours) == 0:
+                            requests.get(f"http://192.168.0.7:18082/sam2/tracking/stop")
+                        else:
+                            x, y, w, h = cv2.boundingRect(contours[0])
+                            x_center = x + int(w / 2)
+                            y_center = y + int(h / 2)
+                            requests.get(f"http://192.168.0.7:18082/sam2/tracking/{x_center}/{y_center}")
+                            cv2.circle(frame, (x_center, y_center), 10, (255, 0, 0), -1)
                             bbox_data.extend([x, y, w, h])
 
                     # 构造UDP消息
                     if bbox_data:
                         msg = f"{len(out_obj_ids)}," + ",".join(map(str, bbox_data))
                         udp_socket.sendto(msg.encode(), (UDP_IP, UDP_PORT))
+                    
+
 
                     end_time = time.time()
                     print(f"send udp time: {end_time - start_time}")

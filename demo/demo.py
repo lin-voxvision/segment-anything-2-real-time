@@ -24,7 +24,7 @@ model_cfg = "sam2_hiera_s.yaml"
 predictor = build_sam2_camera_predictor(model_cfg, sam2_checkpoint)
 print(predictor)
 
-cap = cv2.VideoCapture("rtsp://admin:admin@127.0.0.1:8554/cam/realmonitor?channel=1&subtype=0&unicast=true")
+cap = cv2.VideoCapture("rtsp://admin:admin@127.0.0.1:9554/cam/realmonitor?channel=1&subtype=0&unicast=true")
 
 
 width = 1920
